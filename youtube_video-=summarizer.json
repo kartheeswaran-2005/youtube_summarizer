@@ -1,0 +1,258 @@
+{
+  "name": "youtube_video-=summarizer",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "YouTube Video Summarizer",
+        "formDescription": "Paste any YouTube video URL to get a structured summary",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "YouTube URL",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -1664,
+        0
+      ],
+      "id": "5d1d92a4-cd10-402b-b687-94de07731d9c",
+      "name": "On form submission",
+      "webhookId": "9f98ba01-0a09-4ab5-938c-fc3eecb96e81"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "31810a42-8b58-4211-9878-14361d62133d",
+              "name": "youtube_url",
+              "value": "={{ $json['YouTube URL'] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -1440,
+        0
+      ],
+      "id": "681ff079-fd00-480f-81ba-5ec92db68929",
+      "name": "Set YouTube URL"
+    },
+    {
+      "parameters": {
+        "url": "https://transcriptapi.com/api/v2/youtube/transcript",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "video_url",
+              "value": "={{ $json.youtube_url }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer sk_hnLnyNDnzZNZF8482qpWfB6PsUuSCwr_eVUOIMPQ11Y"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -1216,
+        0
+      ],
+      "id": "7d09adb4-8b2e-4368-9cba-13968cc23686",
+      "name": "Fetch YouTube Transcript"
+    },
+    {
+      "parameters": {
+        "jsCode": "const transcript = $input.first().json.transcript;\n\n// Total duration from the last segment\nconst lastSegment = transcript[transcript.length - 1];\nconst totalDurationSeconds = lastSegment.start + (lastSegment.duration || 0);\n\nfunction formatTime(seconds) {\n  const h = Math.floor(seconds / 3600);\n  const m = Math.floor((seconds % 3600) / 60);\n  const s = Math.floor(seconds % 60);\n  return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');\n}\n\n// Pick chunk size based on total length so short videos get finer\n// detail and long videos get coarser (but still many) chapters\nlet chunkMinutes;\nif (totalDurationSeconds <= 20 * 60) {\n  chunkMinutes = 5;\n} else if (totalDurationSeconds <= 60 * 60) {\n  chunkMinutes = 10;\n} else {\n  chunkMinutes = 15;\n}\nconst chunkSeconds = chunkMinutes * 60;\n\n// Group transcript segments into time-based chunks\nconst chunks = [];\nlet currentChunk = [];\nlet chunkStart = 0;\n\nfor (const segment of transcript) {\n  if (segment.start >= chunkStart + chunkSeconds && currentChunk.length > 0) {\n    chunks.push({\n      startTime: formatTime(chunkStart),\n      endTime: formatTime(segment.start),\n      text: currentChunk.map(s => s.text).join(' ')\n    });\n    chunkStart += chunkSeconds;\n    currentChunk = [];\n  }\n  currentChunk.push(segment);\n}\nif (currentChunk.length > 0) {\n  chunks.push({\n    startTime: formatTime(chunkStart),\n    endTime: formatTime(totalDurationSeconds),\n    text: currentChunk.map(s => s.text).join(' ')\n  });\n}\n\nconst chapteredTranscript = chunks\n  .map(c => `[${c.startTime} - ${c.endTime}]\\n${c.text}`)\n  .join('\\n\\n');\n\nreturn [\n  {\n    json: {\n      totalDuration: formatTime(totalDurationSeconds),\n      chapterCount: chunks.length,\n      chapteredTranscript\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -992,
+        0
+      ],
+      "id": "0d89135c-7c67-45ee-89e4-d539831ed197",
+      "name": "Chunk Transcript by Time"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Video duration: {{ $json.totalDuration }}\nNumber of chapters: {{ $json.chapterCount }}\n\nBelow is the transcript broken into timestamped chapters. Summarize every chapter listed — do not skip or merge chapters:\n\n{{ $json.chapteredTranscript }}",
+        "options": {
+          "systemMessage": "You are an expert video transcript summarizer. You will receive a transcript that has already been split into timestamped chapters (e.g. [00:10:00 - 00:25:00]). Your job is to summarize EVERY chapter given — the length of your output should scale with the number of chapters provided. A video with 4 chapters should get a short summary; a video with 40 chapters should get a much longer, more detailed summary. Never compress a long, multi-chapter video down into a short single-paragraph summary, and never skip or silently merge chapters together.\n\nSTEP 1 — Identify the overall video type: Tutorial/how-to, Vlog/personal story, News/commentary, Interview/podcast, Product review, Entertainment, Lecture/documentary, or Marketing. Adapt tone accordingly (e.g. a tutorial's chapters should read like steps, a review's like pros/cons).\n\nSTEP 2 — Ignore filler, false starts, ads/sponsor reads, and repeated words from transcription. Focus only on substantive content per chapter.\n\nSTEP 3 — Output your response in this exact plain text format (no markdown symbols like #, *, or **, no JSON):\n\nVideo Type: <category>\nTotal Duration: <the duration you were given>\nTitle Guess: <a short 5-10 word title>\n\nOverview:\n<A 2-3 sentence high-level summary of the entire video>\n\nChapters:\n[<start> - <end>] <2-4 sentence summary of what happens in this chapter>\n[<start> - <end>] <2-4 sentence summary of what happens in this chapter>\n(one block like this per chapter given — do not omit any)\n\nKey Takeaways:\n- <takeaway 1>\n- <takeaway 2>\n- <takeaway 3 if relevant>\n\nRULES:\n- You MUST produce one Chapters block per chapter given in the input — count them and match the number exactly.\n- Do not fabricate information not present in the transcript.\n- If a chapter is too short or unclear to summarize meaningfully, say so briefly rather than inventing content.\n- Keep the tone neutral and informative regardless of the video's tone.\n- Never break character or mention that you are an AI language model."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -768,
+        0
+      ],
+      "id": "b03cf6c8-b4e7-4fc1-a18f-e5ebe4142ab7",
+      "name": "AI Summarization Agent"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {
+          "maxOutputTokens": 8000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        -688,
+        240
+      ],
+      "id": "9e9a6113-3cc7-46dc-82a0-6053e7aa934a",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "xJUyKJFRFeHcu8aZ",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "output",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        -416,
+        0
+      ],
+      "id": "11ddacb9-1f67-4e45-9165-52db6c4f98d4",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "C:\\n8n-files\\output.txt",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        -192,
+        0
+      ],
+      "id": "5ab88c67-a3ec-4f02-8897-9fbdcb9a33fe",
+      "name": "Read/Write Files from Disk"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Set YouTube URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set YouTube URL": {
+      "main": [
+        [
+          {
+            "node": "Fetch YouTube Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch YouTube Transcript": {
+      "main": [
+        [
+          {
+            "node": "Chunk Transcript by Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk Transcript by Time": {
+      "main": [
+        [
+          {
+            "node": "AI Summarization Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Summarization Agent": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Summarization Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Read/Write Files from Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "ee1f1ae5-6383-4e8b-8fb4-05f610210ceb",
+  "meta": {
+    "instanceId": "3be0ce39deec7e0f19fffae33ddaade58a41189e81fb92bed8ced58f30bf90f8"
+  },
+  "nodeGroups": [],
+  "id": "qqZtUr2LapEcoQlS",
+  "tags": []
+}
